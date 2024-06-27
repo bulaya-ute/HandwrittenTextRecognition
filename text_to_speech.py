@@ -216,16 +216,22 @@ def recognize_text(image, scale_factor=2.0, color=(0, 0, 255), thickness=1, show
         return merged_rectangles
 
     def sort_rectangles(rectangles):
+        """Sort rectangles in reading order"""
         centers = []
-        for rect in rectangles:
+        for i, rect in enumerate(rectangles):
             x, y, w, h = rect[:4]
-            centers.append((x + w // 2, y + h // 2))
+            centers.append((x + w // 2, y + h // 2, i))
+
+        sorted_centers = sorted(centers, key=lambda item: (item[0] + 1) ** (item[1] + 1))
+        sorted_rects = [rectangles[sc[2]] for sc in sorted_centers]
+        return sorted_rects
 
     scaled_image = cv2.resize(image, (int(image.shape[1] * scale_factor), int(image.shape[0] * scale_factor)))
     original_image = scaled_image.copy()
     two_color_image = convert_to_two_color(scaled_image)
     bounding_boxes = generate_rectangles(two_color_image, width=10, height=10)
     labelled_bounding_boxes = check_and_update_bounding_rectangles(two_color_image, bounding_boxes)
+    labelled_bounding_boxes = sort_rectangles(labelled_bounding_boxes)
     merged_and_labelled = merge_close_rectangles(labelled_bounding_boxes, threshold=1)
 
     if show_steps:
@@ -253,7 +259,7 @@ if __name__ == "__main__":
     configs = BaseModelConfigs.load(f"{directory}/configs.yaml")
     model = ImageToWordModel(model_path=configs.model_path, char_list=configs.vocab)
 
-    text = recognize_text(image=cv2.imread("Datasets/test_image.jpg"), scale_factor=2.5,
-                          show_steps=True, show_image=True, thickness=2, color=(255, 0, 0))
+    text = recognize_text(image=cv2.imread("Datasets/download.jpeg"), scale_factor=2.5,
+                          show_steps=False, show_image=True, thickness=2, color=(255, 0, 0))
     print("DETECTED:", text)
     read_text(f"{text}")
