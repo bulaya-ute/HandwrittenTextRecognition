@@ -1,3 +1,4 @@
+import threading
 import typing
 import cv2
 import numpy as np
@@ -13,31 +14,22 @@ class ImageToWordModel(OnnxInferenceModel):
         self.char_list = char_list
 
     def predict(self, image: np.ndarray):
-        # print("Input shape:", self.input_shape[:2][::-1])
-        image = cv2.resize(image, self.input_shape[:2][::-1])
+        # print("Input shapes:", self.input_shapes)
+        image = cv2.resize(image, self.input_shapes[0][1:3][::-1])
         image_pred = np.expand_dims(image, axis=0).astype(np.float32)
-        preds = self.model.run(None, {self.input_name: image_pred})[0]
+        # print("Input names:", self.input_names)
+        preds = self.model.run(None, {self.input_names[0]: image_pred})[0]
         text = ctc_decoder(preds, self.char_list)[0]
 
         return text
 
 
-def grayscale_to_rgb(grayscale_image):
-    # Get the height and width of the grayscale image
-    height, width = grayscale_image.shape
-
-    # Create an empty RGB image
-    rgb_image = np.zeros((height, width, 3), dtype=np.uint8)
-
-    # Assign grayscale values to all three channels
-    rgb_image[:, :, 0] = grayscale_image
-    rgb_image[:, :, 1] = grayscale_image
-    rgb_image[:, :, 2] = grayscale_image
-
-    return rgb_image
+directory = "Models/03_handwriting_recognition/202308060824"
+configs = BaseModelConfigs.load(f"{directory}/configs.yaml")
+model = ImageToWordModel(model_path=configs.model_path, char_list=configs.vocab)
 
 
-def read_text(text):
+def read_text(text_):
     # Initialize the text-to-speech engine
     engine = pyttsx3.init()
 
@@ -46,57 +38,12 @@ def read_text(text):
     engine.setProperty("volume", 0.9)  # Volume level (0.0 to 1.0)
 
     # Speak the given text
-    engine.say(text)
+    engine.say(text_)
     engine.runAndWait()
 
 
-def fill_bounding_rectangles(image, rectangles):
-    result_image = np.ones_like(image) * 255  # Create a white image of the same size as input
-
-    for rect in rectangles:
-        x, y, w, h, _ = rect
-        result_image[y:y + h, x:x + w] = image[y:y + h, x:x + w]
-
-    return result_image
-
-
-def group_rectangles(rectangles):
-    grouped_rectangles = []
-
-    while rectangles:
-        current_rect = rectangles.pop(0)
-        group = [current_rect]
-
-        i = 0
-        while i < len(rectangles):
-            x1, y1, w1, h1 = current_rect[:4]
-            x2, y2, w2, h2 = rectangles[i][:4]
-            if (
-                    abs(x2 - (x1 + w1)) <= 1
-                    or abs(x1 - (x2 + w2)) <= 1
-                    or abs(y2 - (y1 + h1)) <= 1
-                    or abs(y1 - (y2 + h2)) <= 1
-            ):
-                group.append(rectangles.pop(i))
-            else:
-                i += 1
-
-        merged_rect = group[0]
-        for rect in group[1:]:
-            x1, y1, w1, h1 = merged_rect[:4]
-            x2, y2, w2, h2 = rect[:4]
-            min_x = min(x1, x2)
-            min_y = min(y1, y2)
-            max_x = max(x1 + w1, x2 + w2)
-            max_y = max(y1 + h1, y2 + h2)
-            merged_rect = (min_x, min_y, max_x - min_x, max_y - min_y)
-
-        grouped_rectangles.append(group)
-
-    return grouped_rectangles
-
-
-def recognize_text(image, scale_factor=2.0, color=(0, 0, 255), thickness=1, show_steps=False, show_image=False):
+def recognize_text(image, scale_factor=2.0, color=(0, 255, 0), thickness=1, show_steps=False, show_image=False,
+                   sub_x=10, sub_y=10, greyscale_threshold=128):
     def merge_rectangles(rect1, rect2):
         x1, y1, w1, h1, _ = rect1
         x2, y2, w2, h2, _ = rect2
@@ -113,8 +60,6 @@ def recognize_text(image, scale_factor=2.0, color=(0, 0, 255), thickness=1, show
         return merged_rectangle
 
     def is_rectangles_close(rect1, rect2, threshold=1):
-        """Return True if two rects are 'threshold' units or less apart,
-        else Return False"""
         x1, y1, w1, h1, _ = rect1
         x2, y2, w2, h2, _ = rect2
 
@@ -147,7 +92,7 @@ def recognize_text(image, scale_factor=2.0, color=(0, 0, 255), thickness=1, show
 
         return sub_images
 
-    def convert_to_two_color(image_array, threshold=128):
+    def convert_to_two_color(image_array, threshold=greyscale_threshold):
         # Convert the image to grayscale
         gray_image = cv2.cvtColor(image_array, cv2.COLOR_BGR2GRAY)
 
@@ -157,7 +102,6 @@ def recognize_text(image, scale_factor=2.0, color=(0, 0, 255), thickness=1, show
         return binary_image
 
     def generate_rectangles(image_, width, height):
-        """Return a bunch of rectangles of specified dimensions that cover the entire image"""
         rows, cols = image_.shape
         num_rows = rows // height
         num_cols = cols // width
@@ -171,14 +115,6 @@ def recognize_text(image, scale_factor=2.0, color=(0, 0, 255), thickness=1, show
         return rectangles
 
     def check_and_update_bounding_rectangles(image_, bounding_rectangles):
-        """
-        Check each rectangular region of format (x, y, w, h, l) for the presence
-        of a black pixel. If one is found set l = 1.
-        Return a list of rectangles with asserted 'l'.
-        :param image_:
-        :param bounding_rectangles:
-        :return:
-        """
         updated_bounding_boxes = []
         for i, (x, y, w, h, l) in enumerate(bounding_rectangles):
             roi = image_[y:y + h, x:x + w]
@@ -214,38 +150,73 @@ def recognize_text(image, scale_factor=2.0, color=(0, 0, 255), thickness=1, show
             continue
         return merged_rectangles
 
-    def sort_rectangles(rectangles):
-        """Sort rectangles in reading order"""
-        centers = []
-        for i, rect in enumerate(rectangles):
-            x, y, w, h = rect[:4]
-            centers.append((x + w // 2, y + h // 2, i))
+    def target_wait_key():
+        cv2.waitKey(0)
+        cv2.destroyAllWindows()
 
-        sorted_centers = sorted(centers, key=lambda item: (item[0] + 1) ** (item[1] + 1))
-        sorted_rects = [rectangles[sc[2]] for sc in sorted_centers]
-        return sorted_rects
+    def arrange_in_reading_order(rectangles):
+        """
+        Arranges rectangles in reading order (left-to-right, top-to-bottom), grouping them by intersecting y-ranges.
+
+        :param rectangles: List of rectangles where each rectangle is represented as
+                           (x, y, width, height), with (x, y) as the top-left corner.
+        :return: A list of rectangles sorted in reading order.
+        """
+
+        def y_ranges_intersect(rect1, rect2):
+            """
+            Check if the y-range of rect1 intersects with the y-range of rect2.
+            """
+            _, y1, _, h1 = rect1[:4]
+            _, y2, _, h2 = rect2[:4]
+            # If the y-ranges overlap, there is an intersection
+            return max(y1, y2) <= min(y1 + h1, y2 + h2)
+
+        # Sort the rectangles by their x and y coordinates to roughly arrange them
+        rectangles.sort(key=lambda r: (r[1], r[0]))  # First sort by y, then by x
+
+        # Grouping rectangles by intersecting y-ranges
+        sorted_rectangles = []
+        current_row = []
+
+        for rect in rectangles:
+            if not current_row:
+                current_row.append(rect)
+            else:
+                # Check if the y-range of the current rectangle intersects with the last one in the current row
+                if y_ranges_intersect(current_row[-1], rect):
+                    current_row.append(rect)
+                else:
+                    # Sort the current row by x-coordinate before adding it to the final list
+                    current_row = sorted(current_row, key=lambda r: r[0])  # Sort by x (left-to-right)
+                    sorted_rectangles.extend(current_row)
+                    current_row = [rect]  # Start a new row
+
+        # Sort and append the last row
+        if current_row:
+            current_row = sorted(current_row, key=lambda r: r[0])  # Sort by x (left-to-right)
+            sorted_rectangles.extend(current_row)
+
+        return sorted_rectangles
 
     scaled_image = cv2.resize(image, (int(image.shape[1] * scale_factor), int(image.shape[0] * scale_factor)))
     original_image = scaled_image.copy()
     two_color_image = convert_to_two_color(scaled_image)
-    bounding_boxes = generate_rectangles(two_color_image, width=10, height=10)
+    bounding_boxes = generate_rectangles(two_color_image, width=sub_x, height=sub_y)
     labelled_bounding_boxes = check_and_update_bounding_rectangles(two_color_image, bounding_boxes)
-    labelled_bounding_boxes = sort_rectangles(labelled_bounding_boxes)
     merged_and_labelled = merge_close_rectangles(labelled_bounding_boxes, threshold=1)
+    arranged_in_reading_order = arrange_in_reading_order(merged_and_labelled)
 
     if show_steps:
         cv2.imshow("Original", original_image)
-        cv2.imshow("Threshold", two_color_image)
-        cv2.imshow("Text detection", draw_bounding_boxes(two_color_image, rectangles=labelled_bounding_boxes,
-                                                         color_=(0, 0, 0), thickness_=1))
+        cv2.imshow("Processed", two_color_image)
+        cv2.imshow("Rectangles", draw_bounding_boxes(two_color_image, rectangles=labelled_bounding_boxes))
         cv2.imshow("Final", draw_bounding_boxes(two_color_image, rectangles=merged_and_labelled))
     if show_image:
-        # for group in group_rectangles(rectangles=merged_and_labelled):
-        #     cv2.imshow("Group", fill_bounding_rectangles(original_image, group))
         cv2.imshow("Bounded text", draw_bounding_boxes(original_image, rectangles=merged_and_labelled))
 
     detected_text = ""
-    for img in get_sub_images(original_image, merged_and_labelled):
+    for img in get_sub_images(original_image, arranged_in_reading_order):
         prediction_text = model.predict(img)
         detected_text += prediction_text + " "
     cv2.waitKey(0)
@@ -253,12 +224,68 @@ def recognize_text(image, scale_factor=2.0, color=(0, 0, 255), thickness=1, show
     return detected_text
 
 
-if __name__ == "__main__":
-    model_directory = "Models/03_handwriting_recognition/202308060824"
-    configs = BaseModelConfigs.load(f"{model_directory}/configs.yaml")
-    model = ImageToWordModel(model_path=configs.model_path, char_list=configs.vocab)
+def capture_image(webcam_index=0):
+    # Open the webcam
+    cap = cv2.VideoCapture(webcam_index)
 
-    text = recognize_text(image=cv2.imread("Datasets/download.jpeg"), scale_factor=2.5,
-                          show_steps=False, show_image=True, thickness=2, color=(255, 0, 0))
-    print("DETECTED:", text)
-    read_text(f"{text}")
+    if not cap.isOpened():
+        print("Error: Could not open the webcam")
+        return
+
+    while True:
+        # Read frame from webcam
+        ret, frame = cap.read()
+
+        # Display the frame in a window
+        cv2.imshow(f"Webcam {webcam_index}", frame)
+
+        # Check for key presses
+        key = cv2.waitKey(1) & 0xFF
+
+        # Capture an image when spacebar is pressed
+        if key == ord(" "):
+            cv2.imwrite("Test_images/image1.jpg", frame)
+            cap.release()
+            cv2.destroyAllWindows()
+            return frame
+
+
+def get_image(image_source="webcam"):
+    if image_source.lower()[0:6] == "webcam":
+        webcam_index = image_source[6:]
+        if not webcam_index:
+            webcam_index = 0
+        else:
+            webcam_index = int(webcam_index)
+        return capture_image(webcam_index=webcam_index)
+    else:
+        return cv2.imread(image_source)
+
+
+if __name__ == "__main__":
+    # Set source to either "webcam" or a directory
+
+    # Set source below. Use "webcam" for the webcam or image file path
+    source = "Datasets/images.jpeg"
+    # source = "webcam"
+
+    image = get_image(image_source=source)
+
+    if source == "webcam":
+        # Set the "show_image" argument to True if you want to display the image being used
+        # Set the "show_steps" argument to False if you would like to show the steps for the image processing
+        # Increase the scale factor if words are too close together
+        text = recognize_text(image=image, scale_factor=1.0,
+                              show_steps=True, show_image=True, thickness=2, sub_x=10, sub_y=10,
+                              greyscale_threshold=90)
+        print("DETECTED:", text)
+        read_text(f"{text}")
+
+    else:
+        # Set the "show_image" argument to True if you want to display the image being used
+        # Set the "show_steps" argument to False if you would like to show the steps for the image processing
+        # Increase the scale factor if words are too close together
+        text = recognize_text(image=image, scale_factor=2.5,
+                              show_steps=True, show_image=True, thickness=2, sub_x=10, sub_y=10)
+        print("DETECTED:", text)
+        read_text(f"{text}")
