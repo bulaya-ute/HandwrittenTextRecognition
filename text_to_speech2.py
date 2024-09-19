@@ -216,7 +216,8 @@ def recognize_text(image, scale_factor=2.0, color=(0, 255, 0), thickness=1, show
         cv2.imshow("Bounded text", draw_bounding_boxes(original_image, rectangles=merged_and_labelled))
 
     detected_text = ""
-    for img in get_sub_images(original_image, arranged_in_reading_order):
+    # for img in get_sub_images(original_image, arranged_in_reading_order):
+    for img in get_sub_images(cv2.cvtColor(two_color_image, cv2.COLOR_GRAY2RGB), arranged_in_reading_order):
         prediction_text = model.predict(img)
         detected_text += prediction_text + " "
     cv2.waitKey(0)
@@ -266,7 +267,7 @@ if __name__ == "__main__":
     # Set source to either "webcam" or a directory
 
     # Set source below. Use "webcam" for the webcam or image file path
-    source = "Datasets/images.jpeg"
+    source = "Datasets/image4.jpg"
     # source = "webcam"
 
     image = get_image(image_source=source)
